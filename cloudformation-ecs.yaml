@@ -1,0 +1,193 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  PrivateDNSNamespaceName:
+    Type: String
+    Default: nestservice
+    Description: "The private DNS name that identifies the name that you want to use to locate your resources"
+  NestAppImageName:
+    Type: String
+    Default: paramveerprakash/nestapp:latest
+    Description: "Image to be deployed"
+Resources:
+  VPCFARGATE:
+    Type: AWS::EC2::VPC
+    Properties: 
+      CidrBlock: 10.0.0.0/16
+      InstanceTenancy: default
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: VPCFARGATE
+  INTGATEWAY:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+        Tags:
+            - Key: Name
+              Value: INTGATEWAY
+  ATTACHIG:
+    Type: AWS::EC2::VPCGatewayAttachment
+    DependsOn:
+       - VPCFARGATE
+       - INTGATEWAY
+    Properties:
+        InternetGatewayId: !Ref INTGATEWAY
+        VpcId: !Ref VPCFARGATE
+  ROUTETABLE:
+    Type: AWS::EC2::RouteTable
+    DependsOn: VPCFARGATE
+    Properties:
+        VpcId: !Ref VPCFARGATE
+        Tags:
+            - Key: Name
+              Value: ROUTETABLE
+  ROUTE:
+    Type: AWS::EC2::Route
+    DependsOn:
+        - VPCFARGATE
+        - INTGATEWAY
+        - ROUTETABLE
+    Properties:
+        RouteTableId: !Ref ROUTETABLE
+        DestinationCidrBlock: 0.0.0.0/0
+        GatewayId: !Ref INTGATEWAY
+  SUBNETFARGATE:
+    Type: AWS::EC2::Subnet
+    DependsOn: VPCFARGATE
+    Properties:
+        AvailabilityZone: ap-south-1a
+        CidrBlock: 10.0.0.0/24
+        MapPublicIpOnLaunch: true
+        VpcId: !Ref VPCFARGATE
+  SUBNETROUTE:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn:
+        - SUBNETFARGATE
+        - ROUTETABLE
+    Properties:
+        RouteTableId: !Ref ROUTETABLE
+        SubnetId: !Ref SUBNETFARGATE
+  SGFARGATE:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: VPCFARGATE
+    Properties:
+        VpcId: !Ref VPCFARGATE
+        GroupDescription: Fargate Security Group
+        GroupName: Fargate-SG
+        SecurityGroupIngress: 
+            - CidrIp: 0.0.0.0/0
+              Description: Allow HTTP traffic on port 3000
+              FromPort: 3000
+              IpProtocol: tcp
+              ToPort: 3000
+  PrivateDNSNamespace:
+    Type: 'AWS::ServiceDiscovery::PrivateDnsNamespace'
+    Properties:
+      Vpc: !Ref VPCFARGATE
+      Name: !Ref PrivateDNSNamespaceName            
+  ServiceDiscoveryServiceNestApp:
+    Type: 'AWS::ServiceDiscovery::Service'
+    Properties:
+      DnsConfig:
+        DnsRecords:
+          - Type: SRV
+            TTL: 60
+        NamespaceId: !Ref PrivateDNSNamespace
+      HealthCheckCustomConfig:
+        FailureThreshold: 1
+      Name: 'nestapp.api' 
+  HttpApiVPCLink:
+    Type: AWS::ApiGatewayV2::VpcLink
+    Properties: 
+      Name: nestappvpclink
+      SecurityGroupIds: 
+        - !Ref SGFARGATE
+      SubnetIds: 
+        - !Ref SUBNETFARGATE
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Body:
+        openapi: "3.0.1"
+        info:
+          title: nestappapi
+        paths:
+          /{proxy+}: 
+            get:
+              responses:
+                default:
+                  description: "Default response for GET /api"
+              x-amazon-apigateway-integration:
+                payloadFormatVersion: "1.0"
+                connectionId: !Ref HttpApiVPCLink
+                type: "http_proxy"
+                httpMethod: "ANY"
+                uri: !GetAtt ServiceDiscoveryServiceNestApp.Arn
+                connectionType: "VPC_LINK"
+  HttpApiStage:
+    Type: 'AWS::ApiGatewayV2::Stage'
+    Properties:
+      StageName: '$default'
+      ApiId: !Ref 'HttpApi'
+      AutoDeploy: true
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: deployment-example-cluster
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: deployment-example-log-group
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: nestapp-task
+      Cpu: 256
+      Memory: 512
+      NetworkMode: awsvpc
+      ExecutionRoleArn: ecsTaskExecutionRole
+      ContainerDefinitions:
+        - Name: nestapp-container
+          Image: !Ref NestAppImageName
+          PortMappings:
+            - ContainerPort: 3000
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-region: !Ref AWS::Region
+              awslogs-group: !Ref LogGroup
+              awslogs-stream-prefix: ecs
+      RequiresCompatibilities:
+        - EC2
+        - FARGATE
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: nestapp-service
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      ServiceRegistries:
+        - RegistryArn: !GetAtt ServiceDiscoveryServiceNestApp.Arn
+          Port: 3000
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !Ref SUBNETFARGATE
+          SecurityGroups:
+            - !GetAtt SGFARGATE.GroupId
+Outputs:
+  SwaggerAPIInvokeURL:
+    Description: Invoke URL for the HTTP API
+    Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/api'
+  APIGatewayId:
+    Description: The ID of the HTTP API
+    Value: !Ref 'HttpApi'
+  ECSClusterName:
+    Description: The name of the ECS cluster
+    Value: !Ref 'Cluster'
+  VpcId:
+    Description: The ID of the VPC that this stack is deployed in
+    Value: !Ref 'VPCFARGATE'

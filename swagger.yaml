@@ -1,0 +1,35 @@
+openapi: 3.0.0
+info:
+  title: NestApp API
+  description: NestApp integration with Source Code Managment APIs
+  version: 1.0.0
+  contact: {}
+tags: []
+servers: []
+components:
+  securitySchemes:
+    access-token:
+      scheme: bearer
+      bearerFormat: Token
+      type: http
+  schemas:
+    UserRepositories:
+      type: object
+      properties: {}
+paths:
+  '/api/user/{username}/repositories':
+    get:
+      operationId: UserController_getUserRepositories
+      parameters:
+        - name: username
+          required: true
+          in: path
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserRepositories'
