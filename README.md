@@ -64,7 +64,7 @@ Before starting, make sure you have at least those components on your workstatio
 Start by cloning this project on your workstation.
 
 ``` sh
-git clone <TBD URL> nestapp
+git clone https://github.com/paramveer-prakash/nestapp.git
 ```
 
 The next thing will be to install all the dependencies of the project.
